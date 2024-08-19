@@ -1,0 +1,147 @@
+name: Deploy to ECS for DEV
+
+on:
+  push:
+    branches:
+      - develop
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    outputs:
+      image: ${{ steps.build-backend.outputs.image }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+
+    - name: Set up Python
+      uses: actions/setup-python@v2
+      with:
+        python-version: '3.x'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install flake8 bandit
+
+    - name: Run Flake8 for code style checking
+      run: |
+        flake8 . --exclude=.venv --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+    - name: Run Bandit for security checks
+      run: |
+        bandit -r .
+
+    - name: Build Docker image
+      id: build-backend
+      run: |
+        docker build -t my-backend-image:latest -f Dockerfile .
+        echo "::set-output name=image::my-backend-image:latest"
+
+  test:
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+
+    - name: Set up Python
+      uses: actions/setup-python@v2
+      with:
+        python-version: '3.x'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Run unit tests with coverage
+      run: |
+        pytest --cov=./ --cov-report=xml
+
+    - name: Run container for testing
+      run: |
+        docker run -d -p 5000:5000 ${{ needs.build.outputs.image }}
+        sleep 10  # Time to init contianer
+
+    - name: Run basic API test
+      run: |
+        if curl --silent --fail http://localhost:5000/DevOps; then
+          echo "API test passed"
+        else
+          echo "API test failed"
+          exit 1
+        fi
+    
+    - name: Stop the running container
+      run: |
+        docker ps -q --filter "ancestor=${{ needs.build.outputs.image }}" | xargs -r docker stop
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: test
+
+    env:
+      AWS_REGION: "${{ secrets.AWS_REGION }}"
+      AWS_ACCOUNT_ID: "${{ secrets.AWS_ACCOUNT_ID }}"
+      ENVIRONMENT_NAME: "Develop"
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
+      with:
+        region: ${{ env.AWS_REGION }}
+
+    - name: Tag and push backend image to ECR
+      id: tag-backend
+      run: |
+        docker tag ${{ needs.build.outputs.image }} ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ vars.ECR_REPOSITORY_BACKEND }}:latest
+        docker push ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ vars.ECR_REPOSITORY_BACKEND }}:latest
+        echo "::set-output name=image::${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/$ECR_REPOSITORY:latest"
+      
+    - name: Download task definition
+      run: |
+        aws ecs describe-task-definition --task-definition ${{ vars.ECS_TASK_DEFINITION_NAME }} \
+        --query taskDefinition > task-definition.json
+
+    - name: Fill in the new image ID in the Amazon ECS task definition for backend
+      id: task-def-backend
+      uses: aws-actions/amazon-ecs-render-task-definition@v1
+      with:
+        task-definition: task-definition.json
+        container-name: backend
+        image: ${{ steps.build-backend.outputs.image }}
+
+    - name: Update DEPLOYMENT_ENV variable in task definition
+      run: |
+        jq --arg DEPLOYMENT_ENV "${{ env.ENVIRONMENT_NAME }}" '
+        .containerDefinitions[0].environment |= map(if .name == "DEPLOYMENT_ENV" then .value = $DEPLOYMENT_ENV else . end)' task-definition.json > new-task-def.json
+
+    - name: Deploy Amazon ECS task definition
+      uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+      with:
+        task-definition: new-task-def.json
+        service: ${{ vars.ECS_SERVICE_NAME }}
+        cluster: ${{ vars.ECS_CLUSTER_NAME }}
+        wait-for-service-stability: true
+
+    - name: Wait for ECS service to be stable
+      run: |
+        echo "Waiting for ECS service to be stable..."
+        aws ecs wait services-stable --cluster ${{ vars.ECS_CLUSTER_NAME }} --services ${{ vars.ECS_SERVICE_NAME }}

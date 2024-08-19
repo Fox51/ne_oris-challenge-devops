@@ -1,0 +1,35 @@
+variable "aws_region" {
+    description = "AWS region"
+    type        = string
+    default     = "your-region"
+}
+
+variable "ecr_repository_name" {
+    type    = string
+    default = "your-ecr-repository-name"
+}
+
+variable "ecs_cluster_name" {
+    type    = string
+    default = "your-ecs-cluster-name"
+}
+
+variable "task_family" {
+    type    = string
+    default = "your-task-family"
+}
+
+variable "ecs_service_name" {
+    type    = string    
+    default = "your-ecs-service-name"
+}
+
+variable "subnets" {
+    type = list(string)
+    default = ["your-subnet-id1", "your-subnet-id2", "your-subnet-id3"]
+}
+
+variable "vpc_id" {
+    type    = string
+    default = "your-vpc-id"
+}
