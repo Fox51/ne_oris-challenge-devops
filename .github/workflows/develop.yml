@@ -81,7 +81,7 @@ jobs:
 
     - name: Run basic API test
       run: |
-        if curl --silent --fail http://localhost:5000/DevOps; then
+        if curl --silent --fail http://localhost:5000/health; then
           echo "API test passed"
         else
           echo "API test failed"
