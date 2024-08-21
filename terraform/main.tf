@@ -1,5 +1,5 @@
 resource "aws_iam_role" "ecs_task_execution_role" {
-  name = "ecsTaskExecutionRole"
+  name = "ecsTaskExecutionRole${var.project_name}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
@@ -90,6 +90,7 @@ resource "aws_lb_target_group" "app_tg" {
   port     = 5000
   protocol = "HTTP"
   vpc_id   = var.vpc_id
+   target_type = "ip" 
   health_check {
     path                = "/health"
     protocol            = "HTTP"
@@ -192,7 +193,7 @@ resource "aws_security_group" "ecs_sg" {
     from_port   = 5000
     to_port     = 5000
     protocol    = "tcp"
-    cidr_blocks = [aws_security_group.alb_sg.id]
+    security_groups = [aws_security_group.alb_sg.id]
   }
 
   egress {
