@@ -9,9 +9,6 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
-    outputs:
-      image: ${{ steps.build-backend.outputs.image }}
-
     steps:
     - name: Checkout code
       uses: actions/checkout@v2
@@ -32,10 +29,15 @@ jobs:
         bandit -r . --exit-zero
 
     - name: Build Docker image
-      id: build-backend
       run: |
-        docker build -t my-backend-image:latest -f Dockerfile .
-        echo "::set-output name=image::my-backend-image:latest"
+        docker build -t api_image:latest -f Dockerfile .
+        docker save api_image:latest -o image.tar
+
+    - name: Upload Docker image as artifact
+      uses: actions/upload-artifact@v2
+      with:
+        name: docker-image
+        path: image.tar
 
   test:
     runs-on: ubuntu-latest
@@ -45,15 +47,14 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v2
 
-    - name: Set up Python
-      uses: actions/setup-python@v2
+    - name: Download Docker image artifact
+      uses: actions/download-artifact@v2
       with:
-        python-version: '3.x'
+        name: docker-image
 
-    - name: Install dependencies
+    - name: Load Docker image
       run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
+        docker load -i image.tar
 
     - name: Run unit tests with coverage
       run: |
@@ -61,8 +62,8 @@ jobs:
 
     - name: Run container for testing
       run: |
-        docker run -d -p 5000:5000 ${{ needs.build.outputs.image }}
-        sleep 10  # Time to init contianer
+        docker run -d -p 5000:5000 api_image:latest
+        sleep 10  # Time to init container
 
     - name: Run basic API test
       run: |
@@ -75,7 +76,7 @@ jobs:
     
     - name: Stop the running container
       run: |
-        docker ps -q --filter "ancestor=${{ needs.build.outputs.image }}" | xargs -r docker stop
+        docker ps -q --filter "ancestor=api_image:latest" | xargs -r docker stop
 
   deploy:
     runs-on: ubuntu-latest
@@ -90,6 +91,15 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v2
 
+    - name: Download Docker image artifact
+      uses: actions/download-artifact@v2
+      with:
+        name: docker-image
+
+    - name: Load Docker image
+      run: |
+        docker load -i image.tar
+
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v1
       with:
@@ -97,19 +107,12 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
-    - name: Login to Amazon ECR
-      id: login-ecr
-      uses: aws-actions/amazon-ecr-login@v1
-      with:
-        region: ${{ env.AWS_REGION }}
-
     - name: Tag and push backend image to ECR
       id: tag-backend
       run: |
-        docker tag ${{ needs.build.outputs.image }} ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ vars.ECR_REPOSITORY_BACKEND }}:latest
+        docker tag api_image:latest ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ vars.ECR_REPOSITORY_BACKEND }}:latest
         docker push ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ vars.ECR_REPOSITORY_BACKEND }}:latest
-        echo "::set-output name=image::${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/$ECR_REPOSITORY:latest"
-      
+
     - name: Download task definition
       run: |
         aws ecs describe-task-definition --task-definition ${{ vars.ECS_TASK_DEFINITION_NAME }} \
@@ -121,7 +124,7 @@ jobs:
       with:
         task-definition: task-definition.json
         container-name: backend
-        image: ${{ steps.build-backend.outputs.image }}
+        image: ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ vars.ECR_REPOSITORY_BACKEND }}:latest
 
     - name: Update DEPLOYMENT_ENV variable in task definition
       run: |
