@@ -70,6 +70,15 @@ jobs:
         docker run -d -p 5000:5000 api_image:latest
         sleep 10  # Time to init container
 
+    - name: Ensure container is running
+      run: |
+        if [ $(docker ps -q --filter "ancestor=api_image:latest" | wc -l) -eq 0 ]; then
+          echo "Container is not running"
+          exit 1
+        else
+          echo "Container is running"
+        fi
+
     - name: Run basic API test
       run: |
         if curl --silent --fail http://localhost:5000/DevOps; then
